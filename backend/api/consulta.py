@@ -1,27 +1,31 @@
 ﻿"""
 api/consulta.py
-Endpoint POST /api/consulta — recibe una consulta jurídica y
-devuelve respuesta + referencias usando el motor BM25.
+Endpoint POST /api/consulta — retrieval hibrido BM25 + embeddings semanticos.
 """
 
 import json
+import math
 import re
-import sys
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from rank_bm25 import BM25Okapi
+from openai import OpenAI
 
+from backend.core.settings import settings
 from backend.schemas.consulta import ConsultaRequest, ConsultaResponse, ReferenciaItem
 
 router = APIRouter()
 
-# --- Rutas del corpus ---
 CHUNKS_FILE = Path("data/processed/chunks/jurisprudencia_chunks.json")
+EMBEDDINGS_FILE = Path("data/processed/chunks/jurisprudencia_embeddings.json")
+MODELO_EMBEDDING = "text-embedding-3-small"
+MODELO_CHAT = "gpt-4o-mini"
 TOP_K = 3
 MAX_CHARS_CONTEXTO = 12000
+PESO_BM25 = 0.5
+PESO_SEMANTICO = 0.5
 
 
-# --- Tokenización ---
 def tokenize(text: str) -> list[str]:
     stopwords = {
         "de", "la", "el", "en", "y", "a", "los", "las", "del", "un", "una",
@@ -33,35 +37,55 @@ def tokenize(text: str) -> list[str]:
     return [t for t in tokens if t not in stopwords and len(t) > 2]
 
 
-# --- Estado del índice (cargado una sola vez al iniciar) ---
+def coseno(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(x * x for x in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
 _chunks: list[dict] = []
+_embeddings: list[dict] = []
 _indice: BM25Okapi | None = None
 
 
 def _inicializar():
-    global _chunks, _indice
-    if not CHUNKS_FILE.exists():
-        raise RuntimeError(f"No se encontró el archivo de chunks: {CHUNKS_FILE}")
+    global _chunks, _embeddings, _indice
     with open(CHUNKS_FILE, encoding="utf-8") as f:
         _chunks = json.load(f)
+    with open(EMBEDDINGS_FILE, encoding="utf-8") as f:
+        _embeddings = json.load(f)
     corpus_tokens = [tokenize(c["texto"]) for c in _chunks]
     _indice = BM25Okapi(corpus_tokens)
 
 
-# Inicializar al importar el módulo
 _inicializar()
 
 
-# --- Lógica de consulta (misma que query_engine.py) ---
-def _recuperar(consulta: str) -> list[dict]:
+def _recuperar_hibrido(consulta: str, client: OpenAI) -> list[dict]:
     tokens = tokenize(consulta)
-    scores = _indice.get_scores(tokens)
-    ranking = sorted(
-        [{"chunk": _chunks[i], "score": round(float(s), 4)} for i, s in enumerate(scores)],
-        key=lambda x: x["score"],
-        reverse=True,
-    )
-    return [r for r in ranking[:TOP_K] if r["score"] > 0.0]
+    bm25_scores = _indice.get_scores(tokens)
+    bm25_max = max(bm25_scores) if max(bm25_scores) > 0 else 1.0
+    bm25_norm = [s / bm25_max for s in bm25_scores]
+
+    resp = client.embeddings.create(model=MODELO_EMBEDDING, input=consulta)
+    vector_consulta = resp.data[0].embedding
+    sem_scores = [coseno(vector_consulta, e["embedding"]) for e in _embeddings]
+    sem_max = max(sem_scores) if max(sem_scores) > 0 else 1.0
+    sem_norm = [s / sem_max for s in sem_scores]
+
+    combinados = []
+    for i in range(len(_chunks)):
+        score_final = PESO_BM25 * bm25_norm[i] + PESO_SEMANTICO * sem_norm[i]
+        combinados.append({
+            "chunk": _chunks[i],
+            "score": round(score_final, 4),
+            "score_bm25": round(float(bm25_scores[i]), 4),
+            "score_sem": round(sem_scores[i], 4),
+        })
+
+    combinados.sort(key=lambda x: x["score"], reverse=True)
+    return [r for r in combinados[:TOP_K] if r["score"] > 0.0]
 
 
 def _construir_prompt(consulta: str, recuperados: list[dict]) -> str:
@@ -93,33 +117,13 @@ INSTRUCCIONES DE RESPUESTA:
 """
 
 
-def _generar_respuesta(prompt: str, consulta: str, recuperados: list[dict]) -> str:
-    # TODO: activar cuando haya saldo OpenAI
-    # from openai import OpenAI
-    # client = OpenAI()
-    # response = client.chat.completions.create(
-    #     model="gpt-4o-mini",
-    #     messages=[{"role": "user", "content": prompt}],
-    #     temperature=0.1,
-    # )
-    # return response.choices[0].message.content
-    docs = [r["chunk"]["doc_id"] for r in recuperados]
-    return (
-        "[RESPUESTA SIMULADA — pendiente conexión OpenAI]\n\n"
-        f"Consulta recibida: '{consulta}'\n\n"
-        "Documentos que se enviarían al modelo:\n"
-        + "\n".join(f"  - {d}" for d in docs)
-        + "\n\nCuando se active OpenAI, aquí aparecerá la respuesta fundamentada."
-    )
-
-
-# --- Endpoint ---
 @router.post("/consulta", response_model=ConsultaResponse)
 def consulta(request: ConsultaRequest):
     if not request.consulta.strip():
         raise HTTPException(status_code=400, detail="La consulta no puede estar vacía.")
 
-    recuperados = _recuperar(request.consulta)
+    client = OpenAI(api_key=settings.openai_api_key)
+    recuperados = _recuperar_hibrido(request.consulta, client)
 
     if not recuperados:
         return ConsultaResponse(
@@ -130,7 +134,13 @@ def consulta(request: ConsultaRequest):
         )
 
     prompt = _construir_prompt(request.consulta, recuperados)
-    respuesta = _generar_respuesta(prompt, request.consulta, recuperados)
+
+    response = client.chat.completions.create(
+        model=MODELO_CHAT,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1,
+    )
+    respuesta = response.choices[0].message.content
 
     referencias = [
         ReferenciaItem(
