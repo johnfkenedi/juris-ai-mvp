@@ -16,7 +16,11 @@ from backend.schemas.consulta import ConsultaRequest, ConsultaResponse, Referenc
 
 router = APIRouter()
 
-CHUNKS_FILE = Path("data/processed/chunks/jurisprudencia_chunks.json")
+CHUNKS_FILES = [
+    Path("data/processed/chunks/jurisprudencia_chunks.json"),
+    Path("data/processed/chunks/norm_001_cff_codigo_fiscal_federacion_chunks.json"),
+    Path("data/processed/chunks/norm_002_lfpca_procedimiento_contencioso_administrativo_chunks.json"),
+]
 EMBEDDINGS_FILE = Path("data/processed/chunks/jurisprudencia_embeddings.json")
 MODELO_EMBEDDING = "text-embedding-3-small"
 MODELO_CHAT = "gpt-4o-mini"
@@ -51,8 +55,10 @@ _indice: BM25Okapi | None = None
 
 def _inicializar():
     global _chunks, _embeddings, _indice
-    with open(CHUNKS_FILE, encoding="utf-8") as f:
-        _chunks = json.load(f)
+    _chunks = []
+    for path in CHUNKS_FILES:
+        with open(path, encoding="utf-8") as f:
+            _chunks.extend(json.load(f))
     with open(EMBEDDINGS_FILE, encoding="utf-8") as f:
         _embeddings = json.load(f)
     corpus_tokens = [tokenize(c["texto"]) for c in _chunks]
@@ -63,30 +69,40 @@ _inicializar()
 
 
 def _recuperar_hibrido(consulta: str, client: OpenAI) -> list[dict]:
+    # IDs con embedding disponible
+    embedding_map = {e["chunk_id"]: e["embedding"] for e in _embeddings}
+
+    # Score BM25 sobre todos los chunks
     tokens = tokenize(consulta)
     bm25_scores = _indice.get_scores(tokens)
     bm25_max = max(bm25_scores) if max(bm25_scores) > 0 else 1.0
     bm25_norm = [s / bm25_max for s in bm25_scores]
 
+    # Embedding de la consulta
     resp = client.embeddings.create(model=MODELO_EMBEDDING, input=consulta)
     vector_consulta = resp.data[0].embedding
-    sem_scores = [coseno(vector_consulta, e["embedding"]) for e in _embeddings]
-    sem_max = max(sem_scores) if max(sem_scores) > 0 else 1.0
-    sem_norm = [s / sem_max for s in sem_scores]
 
     combinados = []
-    for i in range(len(_chunks)):
-        score_final = PESO_BM25 * bm25_norm[i] + PESO_SEMANTICO * sem_norm[i]
+    for i, chunk in enumerate(_chunks):
+        bm25_n = bm25_norm[i]
+        chunk_id = chunk["chunk_id"]
+
+        if chunk_id in embedding_map:
+            sem = coseno(vector_consulta, embedding_map[chunk_id])
+            sem_score = sem
+            score_final = PESO_BM25 * bm25_n + PESO_SEMANTICO * sem_score
+        else:
+            # Sin embedding: solo BM25
+            score_final = bm25_n
+
         combinados.append({
-            "chunk": _chunks[i],
+            "chunk": chunk,
             "score": round(score_final, 4),
             "score_bm25": round(float(bm25_scores[i]), 4),
-            "score_sem": round(sem_scores[i], 4),
         })
 
     combinados.sort(key=lambda x: x["score"], reverse=True)
     return [r for r in combinados[:TOP_K] if r["score"] > 0.0]
-
 
 def _construir_prompt(consulta: str, recuperados: list[dict]) -> str:
     partes = []
