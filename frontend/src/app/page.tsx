@@ -19,6 +19,12 @@ interface ResultadoConsulta {
   chunks_usados: number;
 }
 
+function nivelConfianza(score: number): { label: string; color: string; bg: string } {
+  if (score >= 0.6) return { label: "Alta relevancia", color: "#4ade80", bg: "#14290f" };
+  if (score >= 0.3) return { label: "Relevancia media", color: "#fbbf24", bg: "#29200a" };
+  return { label: "Relevancia baja", color: "#f87171", bg: "#290f0f" };
+}
+
 export default function Home() {
   const [consulta, setConsulta] = useState("");
   const [resultado, setResultado] = useState<ResultadoConsulta | null>(null);
@@ -37,11 +43,15 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ consulta }),
       });
-      if (!res.ok) throw new Error(`Error del servidor: ${res.status}`);
+      if (!res.ok) throw new Error(`El servidor respondió con error ${res.status}. Intenta de nuevo.`);
       const data: ResultadoConsulta = await res.json();
       setResultado(data);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Error desconocido");
+      if (e instanceof TypeError && e.message.includes("fetch")) {
+        setError("No se pudo conectar con el servidor. Verifica que el backend esté corriendo.");
+      } else {
+        setError(e instanceof Error ? e.message : "Error desconocido. Intenta de nuevo.");
+      }
     } finally {
       setCargando(false);
     }
@@ -58,7 +68,7 @@ export default function Home() {
     <main style={styles.main}>
       <div style={styles.container}>
 
-{/* Header */}
+        {/* Header */}
         <div style={styles.header}>
           <div style={styles.headerTop}>
             <img src="/logo.jpg" alt="JFCN" style={styles.logo} />
@@ -94,10 +104,25 @@ export default function Home() {
           </button>
         </div>
 
+        {/* Estado de carga */}
+        {cargando && (
+          <div style={styles.cargandoBox}>
+            <div style={styles.cargandoSpinner} />
+            <div>
+              <p style={styles.cargandoTitulo}>Consultando el corpus jurídico...</p>
+              <p style={styles.cargandoSub}>Recuperando documentos relevantes y generando respuesta</p>
+            </div>
+          </div>
+        )}
+
         {/* Error */}
         {error && (
           <div style={styles.errorBox}>
-            <strong>Error:</strong> {error}
+            <span style={styles.errorIcono}>⚠</span>
+            <div>
+              <p style={styles.errorTitulo}>No se pudo completar la consulta</p>
+              <p style={styles.errorDetalle}>{error}</p>
+            </div>
           </div>
         )}
 
@@ -123,18 +148,27 @@ export default function Home() {
                   <span style={styles.seccionLabel}>Fuentes</span>
                 </div>
                 <div style={styles.referencias}>
-                  {resultado.referencias.map((ref, index) => (
-                    <div key={`${ref.doc_id}-${index}`} style={styles.refCard}>
-                      <div style={styles.refHeader}>
-                        <span style={styles.refDocId}>{ref.doc_id}</span>
-                        <span style={styles.refScore}>relevancia {ref.score}</span>
+                  {resultado.referencias.map((ref, index) => {
+                    const confianza = nivelConfianza(ref.score);
+                    return (
+                      <div key={`${ref.doc_id}-${index}`} style={styles.refCard}>
+                        <div style={styles.refHeader}>
+                          <span style={styles.refDocId}>{ref.doc_id}</span>
+                          <span style={{
+                            ...styles.refBadge,
+                            color: confianza.color,
+                            background: confianza.bg,
+                          }}>
+                            {confianza.label}
+                          </span>
+                        </div>
+                        <div style={styles.refMeta}>
+                          {ref.tipo} · {ref.materia} · score {ref.score}
+                        </div>
+                        <p style={styles.refPreview}>{ref.preview}</p>
                       </div>
-                      <div style={styles.refMeta}>
-                        {ref.tipo} · {ref.materia}
-                      </div>
-                      <p style={styles.refPreview}>{ref.preview}</p>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -169,11 +203,28 @@ const styles: Record<string, React.CSSProperties> = {
     borderBottom: "1px solid #2a2d3a",
     paddingBottom: 24,
   },
- headerTop: {
+  headerTop: {
     display: "flex",
-    flexDirection: "row" as const,
+    flexDirection: "row",
     alignItems: "flex-start",
     gap: 24,
+  },
+  logo: {
+    height: 110,
+    width: "auto",
+    objectFit: "contain",
+    flexShrink: 0,
+  },
+  headerTexto: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+    justifyContent: "center",
+  },
+  headerBadges: {
+    display: "flex",
+    gap: 8,
+    marginBottom: 4,
   },
   badge: {
     fontSize: 11,
@@ -199,29 +250,12 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     color: "#f1f5f9",
     letterSpacing: "-0.5px",
-    marginBottom: 8,
+    marginBottom: 4,
   },
   subtitulo: {
     fontSize: 14,
     color: "#64748b",
     letterSpacing: "0.2px",
-  },
-logo: {
-    height: 110,
-    width: "auto",
-    objectFit: "contain" as const,
-    flexShrink: 0,
-  },
-headerTexto: {
-    display: "flex",
-    flexDirection: "column" as const,
-    gap: 6,
-    justifyContent: "center",
-  },
-  headerBadges: {
-    display: "flex",
-    gap: 8,
-    marginBottom: 14,
   },
   searchBox: {
     display: "flex",
@@ -253,13 +287,59 @@ headerTexto: {
     cursor: "pointer",
     letterSpacing: "0.3px",
   },
+  cargandoBox: {
+    display: "flex",
+    alignItems: "center",
+    gap: 16,
+    padding: "18px 20px",
+    background: "#161920",
+    border: "1px solid #2a2d3a",
+    borderRadius: 10,
+  },
+  cargandoSpinner: {
+    width: 28,
+    height: 28,
+    border: "3px solid #2a2d3a",
+    borderTop: "3px solid #2563eb",
+    borderRadius: "50%",
+    animation: "spin 0.8s linear infinite",
+    flexShrink: 0,
+  },
+  cargandoTitulo: {
+    fontSize: 14,
+    fontWeight: 600,
+    color: "#94a3b8",
+    marginBottom: 2,
+  },
+  cargandoSub: {
+    fontSize: 12,
+    color: "#475569",
+  },
   errorBox: {
-    padding: "14px 18px",
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 14,
+    padding: "16px 18px",
     background: "#1f1215",
     border: "1px solid #7f1d1d",
-    borderRadius: 8,
+    borderRadius: 10,
+  },
+  errorIcono: {
+    fontSize: 20,
+    color: "#f87171",
+    flexShrink: 0,
+    marginTop: 1,
+  },
+  errorTitulo: {
     fontSize: 14,
+    fontWeight: 600,
     color: "#fca5a5",
+    marginBottom: 4,
+  },
+  errorDetalle: {
+    fontSize: 13,
+    color: "#f87171",
+    lineHeight: 1.5,
   },
   resultado: {
     display: "flex",
@@ -318,10 +398,11 @@ headerTexto: {
     fontFamily: "monospace",
     color: "#94a3b8",
   },
-  refScore: {
+  refBadge: {
     fontSize: 11,
-    color: "#475569",
-    fontFamily: "monospace",
+    fontWeight: 600,
+    padding: "2px 8px",
+    borderRadius: 4,
   },
   refMeta: {
     fontSize: 11,
