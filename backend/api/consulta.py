@@ -12,6 +12,7 @@ from rank_bm25 import BM25Okapi
 from openai import OpenAI
 
 from backend.core.settings import settings
+from backend.core.logger import log_consulta
 from backend.schemas.consulta import ConsultaRequest, ConsultaResponse, ReferenciaItem
 
 router = APIRouter()
@@ -135,9 +136,10 @@ INSTRUCCIONES DE RESPUESTA:
 
 @router.post("/consulta", response_model=ConsultaResponse)
 def consulta(request: ConsultaRequest):
+    if request.access_key != settings.access_key:
+        raise HTTPException(status_code=401, detail="Clave de acceso incorrecta.")
     if not request.consulta.strip():
         raise HTTPException(status_code=400, detail="La consulta no puede estar vacía.")
-
     client = OpenAI(api_key=settings.openai_api_key)
     recuperados = _recuperar_hibrido(request.consulta, client)
 
@@ -149,6 +151,9 @@ def consulta(request: ConsultaRequest):
             chunks_usados=0,
         )
 
+    import time
+    inicio = time.time()
+
     prompt = _construir_prompt(request.consulta, recuperados)
 
     response = client.chat.completions.create(
@@ -157,6 +162,16 @@ def consulta(request: ConsultaRequest):
         temperature=0.1,
     )
     respuesta = response.choices[0].message.content
+
+    duracion_ms = int((time.time() - inicio) * 1000)
+
+    log_consulta(
+        consulta=request.consulta,
+        chunks_usados=len(recuperados),
+        docs_recuperados=[r["chunk"]["doc_id"] for r in recuperados],
+        chars_respuesta=len(respuesta),
+        duracion_ms=duracion_ms,
+    )
 
     referencias = [
         ReferenciaItem(

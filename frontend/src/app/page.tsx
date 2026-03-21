@@ -27,6 +27,9 @@ function nivelConfianza(score: number): { label: string; color: string; bg: stri
 
 export default function Home() {
   const [consulta, setConsulta] = useState("");
+  const [accessKey, setAccessKey] = useState("");
+  const [autenticado, setAutenticado] = useState(false);
+  const [errorAuth, setErrorAuth] = useState<string | null>(null);
   const [resultado, setResultado] = useState<ResultadoConsulta | null>(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,7 +44,7 @@ export default function Home() {
       const res = await fetch(`${API_BASE}/api/consulta`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ consulta }),
+        body: JSON.stringify({ consulta, access_key: accessKey }),
       });
       if (!res.ok) throw new Error(`El servidor respondió con error ${res.status}. Intenta de nuevo.`);
       const data: ResultadoConsulta = await res.json();
@@ -64,8 +67,42 @@ export default function Home() {
     }
   }
 
+function verificarClave() {
+    if (!accessKey.trim()) return;
+    if (accessKey === "jfcn2026") {
+      setAutenticado(true);
+      setErrorAuth(null);
+    } else {
+      setErrorAuth("Clave incorrecta. Intenta de nuevo.");
+    }
+  }
+
   return (
     <main style={styles.main}>
+	{/* Login */}
+      {!autenticado && (
+        <div style={styles.loginOverlay}>
+          <div style={styles.loginBox}>
+            <img src="/logo.jpg" alt="JFCN" style={styles.loginLogo} />
+            <h2 style={styles.loginTitulo}>Buscador de Jurisprudencia JFCN</h2>
+            <p style={styles.loginSub}>Ingresa la clave de acceso del despacho</p>
+            {errorAuth && <p style={styles.loginError}>{errorAuth}</p>}
+            <input
+              type="password"
+              placeholder="Clave de acceso"
+              value={accessKey}
+              onChange={(e) => setAccessKey(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") verificarClave();
+              }}
+              style={styles.loginInput}
+            />
+            <button style={styles.loginBoton} onClick={verificarClave}>
+              Ingresar
+            </button>
+          </div>
+        </div>
+      )}
       <div style={styles.container}>
 
         {/* Header */}
@@ -191,6 +228,71 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: "100vh",
     padding: "48px 16px",
     background: "#0f1117",
+  },
+loginOverlay: {
+    position: "fixed" as const,
+    inset: 0,
+    background: "#0f1117",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 100,
+  },
+  loginBox: {
+    background: "#161920",
+    border: "1px solid #2a2d3a",
+    borderRadius: 16,
+    padding: "40px 48px",
+    display: "flex",
+    flexDirection: "column" as const,
+    alignItems: "center",
+    gap: 16,
+    maxWidth: 400,
+    width: "100%",
+  },
+  loginLogo: {
+    height: 80,
+    width: "auto",
+    objectFit: "contain" as const,
+    marginBottom: 8,
+  },
+  loginTitulo: {
+    fontSize: 20,
+    fontWeight: 700,
+    color: "#f1f5f9",
+    textAlign: "center" as const,
+  },
+  loginSub: {
+    fontSize: 13,
+    color: "#64748b",
+    textAlign: "center" as const,
+  },
+  loginError: {
+    fontSize: 13,
+    color: "#f87171",
+    textAlign: "center" as const,
+  },
+  loginInput: {
+    width: "100%",
+    padding: "12px 16px",
+    fontSize: 15,
+    border: "1.5px solid #2a2d3a",
+    borderRadius: 8,
+    background: "#0f1117",
+    color: "#f1f5f9",
+    outline: "none",
+    fontFamily: "inherit",
+  },
+  loginBoton: {
+    width: "100%",
+    padding: "12px",
+    fontSize: 15,
+    fontWeight: 700,
+    background: "#2563eb",
+    color: "#fff",
+    border: "none",
+    borderRadius: 8,
+    cursor: "pointer",
   },
   container: {
     maxWidth: 820,

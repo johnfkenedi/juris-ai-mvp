@@ -1,13 +1,9 @@
-﻿"""
-schemas/consulta.py
-Modelos Pydantic para el endpoint de consulta jurídica.
-"""
-
-from pydantic import BaseModel
+﻿from pydantic import BaseModel
 
 
 class ConsultaRequest(BaseModel):
     consulta: str
+    access_key: str = ""
 
 
 class ReferenciaItem(BaseModel):
