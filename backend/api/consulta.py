@@ -21,6 +21,8 @@ CHUNKS_FILES = [
     Path("data/processed/chunks/jurisprudencia_chunks.json"),
     Path("data/processed/chunks/norm_001_cff_codigo_fiscal_federacion_chunks.json"),
     Path("data/processed/chunks/norm_002_lfpca_procedimiento_contencioso_administrativo_chunks.json"),
+    Path("data/processed/chunks/norm_003_lfpa_procedimiento_administrativo_chunks.json"),
+    Path("data/processed/chunks/norm_005_cfpc_codigo_federal_procedimientos_civiles_chunks.json"),
 ]
 EMBEDDINGS_FILE = Path("data/processed/chunks/jurisprudencia_embeddings.json")
 MODELO_EMBEDDING = "text-embedding-3-small"
@@ -68,6 +70,45 @@ def _inicializar():
 
 _inicializar()
 
+def _buscar_articulo_directo(consulta: str) -> list[dict] | None:
+    """Detecta si la consulta pide un artículo específico y lo recupera directamente."""
+    patrones_doc = [
+        (r"art[íi]culo\s+(\d+[\w\-]*)\s+.*cfpc|cfpc.*art[íi]culo\s+(\d+[\w\-]*)|art[íi]culo\s+(\d+[\w\-]*)\s+.*procedimientos\s+civiles", "norm_005_cfpc_codigo_federal_procedimientos_civiles"),
+        (r"art[íi]culo\s+(\d+[\w\-]*)\s+.*cff|cff.*art[íi]culo\s+(\d+[\w\-]*)|art[íi]culo\s+(\d+[\w\-]*)\s+.*c[oó]digo\s+fiscal", "norm_001_cff_codigo_fiscal_federacion"),
+        (r"art[íi]culo\s+(\d+[\w\-]*)\s+.*lfpca|lfpca.*art[íi]culo\s+(\d+[\w\-]*)|art[íi]culo\s+(\d+[\w\-]*)\s+.*contencioso", "norm_002_lfpca_procedimiento_contencioso_administrativo"),
+        (r"art[íi]culo\s+(\d+[\w\-]*)\s+.*lfpa|lfpa.*art[íi]culo\s+(\d+[\w\-]*)|art[íi]culo\s+(\d+[\w\-]*)\s+.*procedimiento\s+administrativo", "norm_003_lfpa_procedimiento_administrativo"),
+    ]
+
+    consulta_lower = consulta.lower()
+
+    for patron, doc_id in patrones_doc:
+        match = re.search(patron, consulta_lower)
+        if match:
+            num = next(g for g in match.groups() if g is not None)
+            chunk_id = f"{doc_id}_art_{num}"
+            chunk = next((c for c in _chunks if c["chunk_id"] == chunk_id), None)
+            if chunk:
+                return [{"chunk": chunk, "score": 1.0, "score_bm25": 1.0}]
+
+    return None
+
+def _buscar_articulo_directo(consulta: str) -> list[dict] | None:
+    patrones_doc = [
+        (r"art[íi]culo\s+(\d+[\w\-]*)\s+.*cfpc|cfpc.*art[íi]culo\s+(\d+[\w\-]*)|art[íi]culo\s+(\d+[\w\-]*)\s+.*procedimientos\s+civiles", "norm_005_cfpc_codigo_federal_procedimientos_civiles"),
+        (r"art[íi]culo\s+(\d+[\w\-]*)\s+.*cff|cff.*art[íi]culo\s+(\d+[\w\-]*)|art[íi]culo\s+(\d+[\w\-]*)\s+.*c[oó]digo\s+fiscal", "norm_001_cff_codigo_fiscal_federacion"),
+        (r"art[íi]culo\s+(\d+[\w\-]*)\s+.*lfpca|lfpca.*art[íi]culo\s+(\d+[\w\-]*)|art[íi]culo\s+(\d+[\w\-]*)\s+.*contencioso", "norm_002_lfpca_procedimiento_contencioso_administrativo"),
+        (r"art[íi]culo\s+(\d+[\w\-]*)\s+.*lfpa|lfpa.*art[íi]culo\s+(\d+[\w\-]*)|art[íi]culo\s+(\d+[\w\-]*)\s+.*procedimiento\s+administrativo", "norm_003_lfpa_procedimiento_administrativo"),
+    ]
+    consulta_lower = consulta.lower()
+    for patron, doc_id in patrones_doc:
+        match = re.search(patron, consulta_lower)
+        if match:
+            num = next(g for g in match.groups() if g is not None)
+            chunk_id = f"{doc_id}_art_{num}"
+            chunk = next((c for c in _chunks if c["chunk_id"] == chunk_id), None)
+            if chunk:
+                return [{"chunk": chunk, "score": 1.0, "score_bm25": 1.0}]
+    return None
 
 def _recuperar_hibrido(consulta: str, client: OpenAI) -> list[dict]:
     # IDs con embedding disponible
@@ -141,7 +182,7 @@ def consulta(request: ConsultaRequest):
     if not request.consulta.strip():
         raise HTTPException(status_code=400, detail="La consulta no puede estar vacía.")
     client = OpenAI(api_key=settings.openai_api_key)
-    recuperados = _recuperar_hibrido(request.consulta, client)
+    recuperados = _buscar_articulo_directo(request.consulta) or _recuperar_hibrido(request.consulta, client)
 
     if not recuperados:
         return ConsultaResponse(
